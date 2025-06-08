@@ -1,36 +1,20 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from openai import OpenAI
-from sentence_transformers import SentenceTransformer
 import numpy as np
+from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import os
 
-app = FastAPI()
-
-# Allow CORS (for frontend communication)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Replace with your Vercel app URL in production
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize models
+# Initialize embedding model (smaller than OpenAI's for local use)
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),  # Store in environment variables
-)
 
-# Custom dataset (replace with your data)
+# Custom dataset - replace with your actual data
 custom_dataset = [
-    {"text": "Employees get 20 vacation days per year.", "metadata": "HR Policy"},
-    {"text": "Refunds take 5-7 business days.", "metadata": "Support Guidelines"},
+    {"text": "Our company policy states that all employees must take lunch between 12-1pm.", "metadata": "HR Policy Doc v3.2"},
+    {"text": "The refund process takes 5-7 business days to complete after approval.", "metadata": "Customer Service Guidelines"},
+    {"text": "The project deadline is every Friday at 5pm EST for status reports.", "metadata": "Project Management Handbook"},
 ]
 
-# Precompute embeddings
+# Create embeddings for your dataset
 document_embeddings = []
 for doc in custom_dataset:
     embedding = embedding_model.encode(doc["text"])
@@ -40,40 +24,65 @@ for doc in custom_dataset:
         "embedding": embedding
     })
 
-class Query(BaseModel):
-    text: str
+def retrieve_relevant_documents(query, k=3):
+    """Retrieve top k most relevant documents for the query"""
+    query_embedding = embedding_model.encode(query)
+    
+    similarities = []
+    for doc in document_embeddings:
+        sim = cosine_similarity(
+            [query_embedding],
+            [doc["embedding"]]
+        )[0][0]
+        similarities.append((sim, doc))
+    
+    # Sort by similarity and return top k
+    similarities.sort(reverse=True, key=lambda x: x[0])
+    return [doc for (sim, doc) in similarities[:k]]
 
-@app.post("/ask")
-async def ask_question(query: Query):
-    try:
-        # Retrieve relevant docs
-        query_embedding = embedding_model.encode(query.text)
-        similarities = []
-        for doc in document_embeddings:
-            sim = cosine_similarity([query_embedding], [doc["embedding"]])[0][0]
-            similarities.append((sim, doc))
-        similarities.sort(reverse=True, key=lambda x: x[0])
-        relevant_docs = [doc for (sim, doc) in similarities[:3]]
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key="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",
+)
 
-        # Build augmented prompt
-        context = "Relevant information:\n"
-        for i, doc in enumerate(relevant_docs, 1):
-            context += f"{i}. {doc['text']} [Source: {doc['metadata']}]\n"
-        
-        augmented_prompt = f"{context}\n\nQuestion: {query.text}\n\nAnswer:"
+userPrompt = "Hello"
 
-        # Call OpenRouter AI
-        completion = client.chat.completions.create(
-            model="deepseek/deepseek-r1-0528-qwen3-8b:free",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": augmented_prompt}
-            ]
-        )
-
-        return {
-            "answer": completion.choices[0].message.content,
-            "sources": [doc["metadata"] for doc in relevant_docs]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+while userPrompt.lower() != "exit":
+    userPrompt = input("Input Prompt (Input exit to cancel): ")
+    if userPrompt.lower() == "exit":
+        break
+    
+    # Retrieve relevant context
+    relevant_docs = retrieve_relevant_documents(userPrompt)
+    
+    # Build context string
+    context = "\n\nRelevant information:\n"
+    for i, doc in enumerate(relevant_docs, 1):
+        context += f"{i}. {doc['text']} [Source: {doc['metadata']}]\n"
+    
+    # Augment the user prompt with context
+    augmented_prompt = f"{context}\n\nQuestion: {userPrompt}\n\nAnswer:"
+    
+    completion = client.chat.completions.create(
+        extra_headers={
+            "HTTP-Referer": "<YOUR_SITE_URL>",
+            "X-Title": "<YOUR_SITE_NAME>",
+        },
+        extra_body={},
+        model="deepseek/deepseek-r1-0528-qwen3-8b:free",
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Use the provided context to answer questions accurately."
+            },
+            {
+                "role": "user",
+                "content": augmented_prompt
+            }
+        ]
+    )
+    print("\nResponse:", completion.choices[0].message.content)
+    print("\nSources used:")
+    for doc in relevant_docs:
+        print(f"- {doc['metadata']}")
+    print()
