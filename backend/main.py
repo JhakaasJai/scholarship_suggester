@@ -4,7 +4,6 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import os
 
-# Initialize embedding model (smaller than OpenAI's for local use)
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # Custom dataset - replace with your actual data
@@ -42,27 +41,21 @@ def retrieve_relevant_documents(query, k=3):
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key="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",
+    api_key="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",
 )
 
-userPrompt = "Hello"
-
-while userPrompt.lower() != "exit":
-    userPrompt = input("Input Prompt (Input exit to cancel): ")
-    if userPrompt.lower() == "exit":
-        break
-    
+def get_chatbot_response(userPrompt: str) -> str:
     # Retrieve relevant context
     relevant_docs = retrieve_relevant_documents(userPrompt)
-    
+
     # Build context string
     context = "\n\nRelevant information:\n"
     for i, doc in enumerate(relevant_docs, 1):
         context += f"{i}. {doc['text']} [Source: {doc['metadata']}]\n"
-    
+
     # Augment the user prompt with context
     augmented_prompt = f"{context}\n\nQuestion: {userPrompt}\n\nAnswer:"
-    
+
     completion = client.chat.completions.create(
         extra_headers={
             "HTTP-Referer": "<YOUR_SITE_URL>",
@@ -81,8 +74,4 @@ while userPrompt.lower() != "exit":
             }
         ]
     )
-    print("\nResponse:", completion.choices[0].message.content)
-    print("\nSources used:")
-    for doc in relevant_docs:
-        print(f"- {doc['metadata']}")
-    print()
+    return completion.choices[0].message.content
